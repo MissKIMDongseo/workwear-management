@@ -18,6 +18,8 @@ import {
   X,
   Eye,
   EyeOff,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 
@@ -73,6 +75,7 @@ interface EmployeeStatRow {
   totalFreq: number
   totalQty: number
   lastDate: string
+  details: TxRecord[]
 }
 
 interface PendingTxConfirm {
@@ -213,6 +216,7 @@ export function App() {
   const [pendingTxConfirm, setPendingTxConfirm] = useState<PendingTxConfirm | null>(null)
 
   const [empSearch, setEmpSearch] = useState('')
+  const [selectedEmpStatKey, setSelectedEmpStatKey] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; msg: string } | null>(null)
 
   const resetItemForm = useCallback((cat: CategoryKey = 'WORKWEAR') => {
@@ -498,7 +502,7 @@ export function App() {
 
   const hiddenZeroRowCount = Math.max(0, allMatrixRows.length - matrixRows.length)
 
-  // 사원별 지급 빈도 집계는 현재 활성 처리 이력(txs) 기준으로 계산 (이력 0건 시 0건)
+  // 사원번호 + 사원명이 같으면 한 행으로 누적 집계 및 지급 상세 내역 수집
   const employeeStats = useMemo<EmployeeStatRow[]>(() => {
     const computedMap = new Map<string, EmployeeStatRow>()
 
@@ -506,27 +510,27 @@ export function App() {
       if (t.txType !== 'ISSUE') continue
       const cleanNo = t.empNo.trim()
       const cleanName = t.empName.trim()
-      if (!cleanNo && !cleanName) continue
-      const key = cleanNo || cleanName
+      if (!cleanNo || !cleanName) continue
+
+      const key = `${cleanNo.toLowerCase()}::${cleanName.toLowerCase()}`
       const kstTxDate = getKstDateString(t.txDate)
 
       const existing = computedMap.get(key) ?? {
         key,
-        empNo: cleanNo || '-',
-        empName: cleanName || '(미입력)',
+        empNo: cleanNo,
+        empName: cleanName,
         issueCount: 0,
         exchangeCount: 0,
         totalFreq: 0,
         totalQty: 0,
         lastDate: kstTxDate,
+        details: [],
       }
-
-      if (cleanNo && existing.empNo === '-') existing.empNo = cleanNo
-      if (cleanName && existing.empName === '(미입력)') existing.empName = cleanName
 
       existing.issueCount += 1
       existing.totalFreq += 1
       existing.totalQty += t.qty
+      existing.details.push({ ...t, txDate: kstTxDate })
 
       if (kstTxDate >= existing.lastDate) existing.lastDate = kstTxDate
       computedMap.set(key, existing)
@@ -534,6 +538,10 @@ export function App() {
 
     const q = empSearch.trim().toLowerCase()
     return Array.from(computedMap.values())
+      .map((row) => ({
+        ...row,
+        details: [...row.details].sort((a, b) => b.txDate.localeCompare(a.txDate)),
+      }))
       .filter((row) =>
         !q
           ? true
@@ -541,6 +549,11 @@ export function App() {
       )
       .sort((a, b) => b.totalFreq - a.totalFreq || b.issueCount - a.issueCount)
   }, [txs, empSearch])
+
+  const selectedEmployeeStat = useMemo(
+    () => employeeStats.find((row) => row.key === selectedEmpStatKey) ?? null,
+    [employeeStats, selectedEmpStatKey]
+  )
 
   const handleCellClick = (item: ItemEntry, sizeLabel: string) => {
     setSelectedItemId(item.id)
@@ -736,7 +749,7 @@ export function App() {
     resetTxInputsAfterSave()
     setNotice({
       ok: true,
-      msg: `[${pType === 'ISSUE' ? '지급' : '입고'} 완료] ${cleanName || cleanNo || '재고'} — ${targetItem.itemName} (${targetCell.sizeLabel}) ${pQty}${targetItem.unit}${dbSynced ? ' (DB 반영됨)' : ' (화면 상태 반영)'}`,
+      msg: `[${pType === 'ISSUE' ? '지급' : '입고'} 완료] ${cleanName} (${cleanNo}) — ${targetItem.itemName} (${targetCell.sizeLabel}) ${pQty}${targetItem.unit}${dbSynced ? ' (DB 반영됨)' : ' (화면 상태 반영)'}`,
     })
   }
 
@@ -2077,35 +2090,109 @@ export function App() {
                     <th className="px-3 py-2 text-right">지급 횟수</th>
                     <th className="px-3 py-2 text-right">총 수량</th>
                     <th className="px-3 py-2 text-right">최근일(KST)</th>
+                    <th className="px-3 py-2 text-right">상세</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 bg-white">
                   {employeeStats.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-slate-400">
+                      <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                         집계된 사원 이력이 없습니다. (0건)
                       </td>
                     </tr>
                   ) : (
-                    employeeStats.map((row) => (
-                      <tr key={row.key} className="hover:bg-slate-50">
-                        <td className="px-3 py-2 font-mono text-slate-700">{row.empNo}</td>
-                        <td className="px-3 py-2 font-semibold text-slate-900">{row.empName}</td>
-                        <td className="px-3 py-2 text-right font-bold text-blue-600">
-                          {row.issueCount}회
-                        </td>
-                        <td className="px-3 py-2 text-right font-medium text-emerald-700">
-                          {row.totalQty}개
-                        </td>
-                        <td className="px-3 py-2 text-right text-slate-500">
-                          {row.lastDate ? getKstDateString(row.lastDate) : '-'}
-                        </td>
-                      </tr>
-                    ))
+                    employeeStats.map((row) => {
+                      const isExpanded = selectedEmpStatKey === row.key
+                      return (
+                        <tr
+                          key={row.key}
+                          onClick={() =>
+                            setSelectedEmpStatKey((prev) => (prev === row.key ? null : row.key))
+                          }
+                          className={`cursor-pointer transition ${
+                            isExpanded ? 'bg-blue-50/80' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <td className="px-3 py-2 font-mono text-slate-700">{row.empNo}</td>
+                          <td className="px-3 py-2 font-semibold text-slate-900">{row.empName}</td>
+                          <td className="px-3 py-2 text-right font-bold text-blue-600">
+                            {row.issueCount}회
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium text-emerald-700">
+                            {row.totalQty}개
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-500">
+                            {row.lastDate ? getKstDateString(row.lastDate) : '-'}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-500">
+                            <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-blue-700">
+                              {isExpanded ? (
+                                <>
+                                  닫기 <ChevronUp className="h-3.5 w-3.5" />
+                                </>
+                              ) : (
+                                <>
+                                  보기 <ChevronDown className="h-3.5 w-3.5" />
+                                </>
+                              )}
+                            </span>
+                          </td>
+                        </tr>
+                      )
+                    })
                   )}
                 </tbody>
               </table>
             </div>
+
+            {/* 선택한 사원의 지급 상세 내역 */}
+            {selectedEmployeeStat && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-3 text-xs">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="font-bold text-slate-900">
+                    {selectedEmployeeStat.empName} ({selectedEmployeeStat.empNo}) 지급 상세 내역 · 총{' '}
+                    {selectedEmployeeStat.issueCount}회 / {selectedEmployeeStat.totalQty}개
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEmpStatKey(null)}
+                    className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+                  >
+                    닫기
+                  </button>
+                </div>
+
+                <ul className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {selectedEmployeeStat.details.map((detail) => (
+                    <li
+                      key={detail.id}
+                      className="rounded-lg border border-blue-100 bg-white px-3 py-2 text-slate-800"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <div>
+                          <span className="mr-2 font-mono text-[11px] text-slate-500">
+                            {detail.txDate}
+                          </span>
+                          <span className="font-semibold text-slate-900">{detail.itemName}</span>
+                          <span className="mx-1.5 text-slate-400">·</span>
+                          <span>{detail.sizeLabel}</span>
+                          <span className="mx-1.5 text-slate-400">·</span>
+                          <span className="font-bold text-blue-700">{detail.qty}개</span>
+                        </div>
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                          {detail.reason}
+                        </span>
+                      </div>
+                      {detail.memo && (
+                        <div className="mt-1 text-[11px] font-medium text-amber-800">
+                          메모: {detail.memo}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div>
               <div className="mb-2 flex items-center justify-between">
