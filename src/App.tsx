@@ -16,6 +16,8 @@ import {
   Settings2,
   Image as ImageIcon,
   X,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 
@@ -171,10 +173,11 @@ export function App() {
   const [dbConnected, setDbConnected] = useState<boolean>(false)
   const [loadingDb, setLoadingDb] = useState<boolean>(false)
 
-  // 현황표 필터: 작업복 / 안전화 분리 (기본값 'WORKWEAR')
+  // 현황표 필터: 작업복 / 안전화 분리 (기본값 'WORKWEAR'), 0 재고 숨기기 기본 활성
   const [categoryFilter, setCategoryFilter] = useState<CategoryKey>('WORKWEAR')
   const [itemFilterId, setItemFilterId] = useState<string>('ALL')
   const [itemSearch, setItemSearch] = useState<string>('')
+  const [hideZeroStock, setHideZeroStock] = useState<boolean>(true)
 
   // 품목 등록 · 수정 · 삭제 관리 상태
   const [showItemManager, setShowItemManager] = useState(false)
@@ -391,6 +394,7 @@ export function App() {
       if (Array.isArray(txRows)) {
         const mappedTxs: TxRecord[] = txRows.map((t: any) => {
           const meta = stockMetaById.get(String(t.stock_id))
+          const rawMemo = typeof t.memo === 'string' ? t.memo.trim() : ''
           return {
             id: String(t.id),
             txDate: t.tx_date ? getKstDateString(String(t.tx_date)) : getKstDateString(),
@@ -404,7 +408,7 @@ export function App() {
             stockId: t.stock_id ? String(t.stock_id) : undefined,
             qty: Number(t.qty ?? 1),
             statusNote: String(t.status_note ?? '처리완료'),
-            memo: t.memo || undefined,
+            memo: rawMemo || undefined,
           }
         })
         setTxs(mappedTxs)
@@ -468,7 +472,8 @@ export function App() {
     })
   }, [categoryFilteredItems, itemFilterId, itemSearch])
 
-  const matrixRows = useMemo(() => {
+  // 전체 사이즈 행 목록
+  const allMatrixRows = useMemo(() => {
     const map = new Map<string, { sizeLabel: string; sizeOrder: number }>()
     for (const item of visibleItems) {
       for (const s of item.stocks) {
@@ -479,6 +484,19 @@ export function App() {
     }
     return Array.from(map.values()).sort((a, b) => a.sizeOrder - b.sizeOrder)
   }, [visibleItems])
+
+  // hideZeroStock이 true일 때는 표시 품목 기준 가용재고 합계가 0인 사이즈 행 숨김
+  const matrixRows = useMemo(() => {
+    if (!hideZeroStock) return allMatrixRows
+    return allMatrixRows.filter((row) =>
+      visibleItems.some((item) => {
+        const cell = item.stocks.find((s) => s.sizeLabel === row.sizeLabel)
+        return (cell?.availableQty ?? 0) > 0
+      })
+    )
+  }, [allMatrixRows, hideZeroStock, visibleItems])
+
+  const hiddenZeroRowCount = Math.max(0, allMatrixRows.length - matrixRows.length)
 
   // 사원별 지급 빈도 집계는 현재 활성 처리 이력(txs) 기준으로 계산 (이력 0건 시 0건)
   const employeeStats = useMemo<EmployeeStatRow[]>(() => {
@@ -555,6 +573,17 @@ export function App() {
     e.preventDefault()
     setNotice(null)
 
+    const trimmedEmpNo = empNo.trim()
+    const trimmedEmpName = empName.trim()
+
+    if (!trimmedEmpNo || !trimmedEmpName) {
+      setNotice({
+        ok: false,
+        msg: '지급 · 입고 등록 시 사원번호와 사원명을 모두 입력해 주세요. (등록 잠금)',
+      })
+      return
+    }
+
     if (!selectedItem || !currentStockCell) {
       setNotice({
         ok: false,
@@ -564,11 +593,6 @@ export function App() {
     }
     if (qty < 1) {
       setNotice({ ok: false, msg: '수량은 1 이상이어야 합니다.' })
-      return
-    }
-
-    if (txType === 'ISSUE' && !empName.trim() && !empNo.trim()) {
-      setNotice({ ok: false, msg: '지급 시 사원명 또는 사원번호를 입력해 주세요.' })
       return
     }
 
@@ -585,8 +609,8 @@ export function App() {
     setPendingTxConfirm({
       txType,
       txDate: normalizedDate,
-      empNo: empNo.trim(),
-      empName: empName.trim(),
+      empNo: trimmedEmpNo,
+      empName: trimmedEmpName,
       item: selectedItem,
       stockCell: currentStockCell,
       qty,
@@ -1142,8 +1166,7 @@ export function App() {
               <div className="flex justify-between">
                 <span className="text-slate-500">사원</span>
                 <span className="font-semibold text-slate-900">
-                  {pendingTxConfirm.empName || '-'}{' '}
-                  {pendingTxConfirm.empNo ? `(${pendingTxConfirm.empNo})` : ''}
+                  {pendingTxConfirm.empName} ({pendingTxConfirm.empNo})
                 </span>
               </div>
               <div className="flex justify-between">
@@ -1160,6 +1183,12 @@ export function App() {
                   {pendingTxConfirm.item.unit}
                 </span>
               </div>
+              {pendingTxConfirm.memo && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">메모</span>
+                  <span className="font-semibold text-slate-900">{pendingTxConfirm.memo}</span>
+                </div>
+              )}
               <div className="flex justify-between border-t border-slate-200 pt-1.5">
                 <span className="text-slate-500">반영 후 재고</span>
                 <span className="font-bold text-slate-900">
@@ -1462,7 +1491,7 @@ export function App() {
                 )}
               </div>
 
-              {/* 신규 등록 시 사이즈별 초기재고 개별 입력 그리드 (보조 일괄 버튼 제거) */}
+              {/* 신규 등록 시 사이즈별 초기재고 개별 입력 그리드 */}
               {!editingItemId && (
                 <div className="rounded-xl border border-slate-200 bg-white p-3">
                   <div className="mb-2.5">
@@ -1596,11 +1625,14 @@ export function App() {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-base font-bold text-slate-900">품목 · 사이즈별 재고 현황표</h2>
             <span className="text-xs text-slate-500">
-              표시 품목 {visibleItems.length}종 · 썸네일 클릭 시 사진 팝업
+              표시 품목 {visibleItems.length}종 ·{' '}
+              {hideZeroStock
+                ? `0 재고 ${hiddenZeroRowCount}행 숨김 중`
+                : '0 재고 포함 전체 표시 중'}
             </span>
           </div>
 
-          {/* 작업복 / 안전화 필터 + 품목 선택 + 검색어 입력 */}
+          {/* 작업복 / 안전화 필터 + 품목 선택 + 검색어 + 0 재고 보기/숨기기 토글 */}
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-slate-200 bg-slate-50/80 p-2.5 text-xs">
             <div className="flex flex-wrap items-center gap-1.5">
               {(
@@ -1666,6 +1698,26 @@ export function App() {
                 </button>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={() => setHideZeroStock((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-xs font-semibold transition ${
+                hideZeroStock
+                  ? 'border-slate-300 bg-white text-slate-800 hover:bg-slate-100'
+                  : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+              }`}
+            >
+              {hideZeroStock ? (
+                <>
+                  <Eye className="h-3.5 w-3.5 text-blue-600" />0 재고 보기
+                </>
+              ) : (
+                <>
+                  <EyeOff className="h-3.5 w-3.5 text-amber-700" />0 재고 숨기기
+                </>
+              )}
+            </button>
           </div>
 
           {/* 가로 스크롤 + 왼쪽 사이즈 열 고정 */}
@@ -1710,6 +1762,16 @@ export function App() {
                       className="px-4 py-8 text-center text-slate-400"
                     >
                       표시할 품목이 없습니다. (0건)
+                    </td>
+                  </tr>
+                ) : matrixRows.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={1 + visibleItems.length}
+                      className="px-4 py-8 text-center text-slate-400"
+                    >
+                      재고가 0보다 큰 사이즈가 없습니다. [0 재고 보기]를 누르면 0 재고 행을 볼 수
+                      있습니다.
                     </td>
                   </tr>
                 ) : (
@@ -1846,9 +1908,10 @@ export function App() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">사원번호</label>
+                <label className="mb-1 block text-xs font-medium text-slate-700">사원번호 *</label>
                 <input
                   type="text"
+                  required
                   placeholder="예: EMP-105"
                   value={empNo}
                   onChange={(e) => setEmpNo(e.target.value)}
@@ -1856,9 +1919,10 @@ export function App() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">사원명</label>
+                <label className="mb-1 block text-xs font-medium text-slate-700">사원명 *</label>
                 <input
                   type="text"
+                  required
                   placeholder="예: 홍길동"
                   value={empName}
                   onChange={(e) => setEmpName(e.target.value)}
@@ -2073,18 +2137,25 @@ export function App() {
                       key={t.id}
                       className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                     >
-                      <div className="text-slate-800">
-                        <span className="mr-2 font-mono text-[11px] text-slate-500">
-                          {getKstDateString(t.txDate)}
-                        </span>
-                        <span className="font-semibold text-slate-900">
-                          {t.empName || '-'} {t.empNo ? `(${t.empNo})` : ''}
-                        </span>
-                        <span className="mx-1.5 text-slate-400">/</span>
-                        <span>
-                          {t.itemName} · {t.sizeLabel} · {t.qty}개
-                        </span>
-                        <span className="ml-2 text-[11px] text-slate-500">[{t.reason}]</span>
+                      <div className="space-y-0.5 text-slate-800">
+                        <div>
+                          <span className="mr-2 font-mono text-[11px] text-slate-500">
+                            {getKstDateString(t.txDate)}
+                          </span>
+                          <span className="font-semibold text-slate-900">
+                            {t.empName || '-'} {t.empNo ? `(${t.empNo})` : ''}
+                          </span>
+                          <span className="mx-1.5 text-slate-400">/</span>
+                          <span>
+                            {t.itemName} · {t.sizeLabel} · {t.qty}개
+                          </span>
+                          <span className="ml-2 text-[11px] text-slate-500">[{t.reason}]</span>
+                        </div>
+                        {t.memo && (
+                          <div className="text-[11px] font-medium text-amber-800">
+                            메모: {t.memo}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span
