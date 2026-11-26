@@ -741,7 +741,6 @@ export function App() {
             items={items}
             setItems={setItems}
             txs={txs}
-            setTxs={setTxs}
             dbConnected={dbConnected}
             selectedItemId={selectedItemId}
             setSelectedItemId={setSelectedItemId}
@@ -763,5 +762,4 @@ export function App() {
     </div>
   )
 }
-
 export default App
