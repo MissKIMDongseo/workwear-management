@@ -38,7 +38,6 @@ interface GearIssueTabProps {
   items: ItemEntry[]
   setItems: React.Dispatch<React.SetStateAction<ItemEntry[]>>
   txs: TxRecord[]
-  setTxs: React.Dispatch<React.SetStateAction<TxRecord[]>>
   dbConnected: boolean
   selectedItemId: string
   setSelectedItemId: React.Dispatch<React.SetStateAction<string>>
@@ -61,7 +60,6 @@ export function GearIssueTab({
   items,
   setItems,
   txs,
-  setTxs,
   dbConnected,
   selectedItemId,
   setSelectedItemId,

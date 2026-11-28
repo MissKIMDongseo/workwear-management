@@ -13,6 +13,7 @@ import {
   EyeOff,
   ChevronDown,
   ChevronUp,
+  Download,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import {
@@ -55,6 +56,31 @@ interface GearIssueTabProps {
 
 const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white/90 px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none'
+
+function escapeCsvCell(value: string | number | null | undefined): string {
+  const str = String(value ?? '')
+  if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+function downloadExcelCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const csvLines = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+  ]
+  const csvContent = '\uFEFF' + csvLines.join('\r\n')
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
 
 export function GearIssueTab({
   items,
@@ -268,6 +294,84 @@ export function GearIssueTab({
   }, [allMatrixRows, hideZeroStock, visibleItems])
 
   const hiddenZeroRowCount = Math.max(0, allMatrixRows.length - matrixRows.length)
+
+  // 품목 · 사이즈별 재고 현황표 — 0재고 제외 엑셀 내려받기
+  const handleDownloadNonZeroStockExcel = () => {
+    const headers = ['분류', '품목코드', '품목명', '사이즈', '가용재고', '단위']
+    const rows: (string | number)[][] = []
+
+    for (const item of visibleItems) {
+      const catLabel = item.category === 'WORKWEAR' ? '작업복' : '안전화'
+      const sortedStocks = [...item.stocks].sort((a, b) => a.sizeOrder - b.sizeOrder)
+      for (const cell of sortedStocks) {
+        if (cell.availableQty > 0) {
+          rows.push([
+            catLabel,
+            item.itemCode,
+            item.itemName,
+            cell.sizeLabel,
+            cell.availableQty,
+            item.unit,
+          ])
+        }
+      }
+    }
+
+    if (rows.length === 0) {
+      onNotice({
+        ok: false,
+        msg: '현재 조건에서 가용재고가 0보다 큰 품목·사이즈 데이터가 없습니다.',
+      })
+      return
+    }
+
+    const today = getKstDateString()
+    const catName = categoryFilter === 'WORKWEAR' ? '작업복' : '안전화'
+    downloadExcelCsv(`재고현황_${catName}_0재고제외_${today}.csv`, headers, rows)
+    onNotice({
+      ok: true,
+      msg: `0재고 제외 재고 현황 (${rows.length}건) 엑셀 파일을 내려받았습니다.`,
+    })
+  }
+
+  // 최근 처리 이력 — 엑셀 내려받기 (날짜, 사원이름, 사원번호, 품목, 수량, 비고)
+  const handleDownloadRecentTxExcel = () => {
+    if (txs.length === 0) {
+      onNotice({
+        ok: false,
+        msg: '내려받을 최근 처리 이력이 없습니다.',
+      })
+      return
+    }
+
+    const headers = ['날짜', '사원이름', '사원번호', '품목', '수량', '비고']
+    const rows: (string | number)[][] = txs.map((t) => {
+      const typeLabel = t.txType === 'ISSUE' ? '지급' : '입고'
+      const itemWithSize = t.sizeLabel ? `${t.itemName} (${t.sizeLabel})` : t.itemName
+      const noteParts = [
+        `[${typeLabel}]`,
+        t.reason,
+        t.statusNote && t.statusNote !== t.reason ? t.statusNote : '',
+        t.memo ? `메모: ${t.memo}` : '',
+      ].filter(Boolean)
+
+      return [
+        getKstDateString(t.txDate),
+        t.empName || '-',
+        t.empNo || '-',
+        itemWithSize,
+        t.qty,
+        noteParts.join(' / '),
+      ]
+    })
+
+    const today = getKstDateString()
+    downloadExcelCsv(`최근처리이력_${today}.csv`, headers, rows)
+    onNotice({
+      ok: true,
+      msg: `최근 처리 이력 (${rows.length}건) 엑셀 파일을 내려받았습니다.`,
+    })
+  }
 
   // 사원번호 + 사원명이 같으면 한 행으로 누적 집계 및 지급 상세 내역 수집
   const employeeStats = useMemo<EmployeeStatRow[]>(() => {
@@ -893,11 +997,11 @@ export function GearIssueTab({
         </div>
       )}
 
-      {/* 품목 · 사이즈별 재고 현황표 (작업복 / 안전화 분리 + 헤더 우측 품목 관리 버튼) */}
+      {/* 품목 · 사이즈별 재고 현황표 (작업복 / 안전화 분리 + 헤더 우측 품목 관리 & 0재고 제외 내려받기 버튼) */}
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-bold text-slate-900">품목 · 사이즈별 재고 현황표</h2>
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-500">
               표시 품목 {visibleItems.length}종 ·{' '}
               {hideZeroStock
@@ -911,6 +1015,14 @@ export function GearIssueTab({
             >
               <SlidersHorizontal className="h-3.5 w-3.5" />
               품목 관리
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadNonZeroStockExcel}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 shadow-xs hover:bg-emerald-100"
+            >
+              <Download className="h-3.5 w-3.5" />
+              0재고 제외 내려받기
             </button>
           </div>
         </div>
@@ -1465,22 +1577,32 @@ export function GearIssueTab({
           )}
 
           <div>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold text-slate-700">
                 최근 처리 이력 ({txs.length}건)
               </h3>
-              <button
-                type="button"
-                onClick={() => setTxManageMode((v) => !v)}
-                className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
-                  txManageMode
-                    ? 'border-rose-300 bg-rose-50 text-rose-700'
-                    : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Settings2 className="h-3 w-3" />
-                (관리)
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleDownloadRecentTxExcel}
+                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                >
+                  <Download className="h-3 w-3" />
+                  엑셀 내려받기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTxManageMode((v) => !v)}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
+                    txManageMode
+                      ? 'border-rose-300 bg-rose-50 text-rose-700'
+                      : 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Settings2 className="h-3 w-3" />
+                  (관리)
+                </button>
+              </div>
             </div>
 
             <ul className="max-h-44 space-y-1.5 overflow-y-auto text-xs">
